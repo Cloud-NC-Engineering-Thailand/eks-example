@@ -5,3 +5,23 @@ vault write auth/approle/role/services-admin \
   secret_id_ttl=0 \
   secret_id_num_uses=0 \
   secret_id_bound_cidrs=10.0.0.0/16
+
+  vault write database/config/demoee-postgresql \
+    plugin_name="postgresql-database-plugin" \
+    allowed_roles="profile" \
+    connection_url="postgresql://{{username}}:{{password}}@demoee-db.csbwsm0go2fs.us-east-1.rds.amazonaws.com:5432/postgres" \
+    username="postgres" \
+    password="[]" \
+    password_authentication="scram-sha-256"
+
+vault write database/roles/profile \
+    db_name="demoee-postgresql" \
+    creation_statements="CREATE ROLE \"{{name}}\" WITH LOGIN PASSWORD '{{password}}' VALID UNTIL '{{expiration}}'; \
+        GRANT USAGE ON SCHEMA profile TO \"{{name}}\"; \
+        GRANT SELECT ON ALL TABLES IN SCHEMA profile TO \"{{name}}\";" \
+    default_ttl="168h" \
+    max_ttl="168h"
+
+    SQL Error [42501]: ERROR: permission denied for schema profile
+  Position: 17
+Success! Data written to: database/roles/my-role
