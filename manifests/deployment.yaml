@@ -1,0 +1,66 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: s3-reader
+  namespace: demo
+  labels:
+    app: s3-reader
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: s3-reader
+  template:
+    metadata:
+      labels:
+        app: s3-reader
+    spec:
+      serviceAccountName: s3-reader
+      automountServiceAccountToken: true
+      containers:
+        - name: s3-reader
+          image: amazon/aws-cli:latest
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -e
+
+              echo "=== Step 1: Create sample file ==="
+              cat <<EOF > /tmp/sample.txt
+              Hello from s3-reader pod!
+              Generated at: $(date)
+              Pod: ${HOSTNAME}
+              Bucket: ${S3_BUCKET_NAME}
+              EOF
+              echo "Sample file created:"
+              cat /tmp/sample.txt
+
+              echo ""
+              echo "=== Step 2: Upload to S3 ==="
+              aws s3 cp /tmp/sample.txt s3://${S3_BUCKET_NAME}/${S3_OBJECT_KEY}
+              echo "Uploaded to s3://${S3_BUCKET_NAME}/${S3_OBJECT_KEY}"
+
+              echo ""
+              echo "=== Step 3: Read back from S3 ==="
+              aws s3 cp s3://${S3_BUCKET_NAME}/${S3_OBJECT_KEY} -
+              echo "Done."
+              echo "Done. Sleeping to keep container alive..."
+              sleep infinity
+          env:
+            - name: S3_BUCKET_NAME
+              value: "demoee-s3-tf-remote-state-us-east-1-001"          # Replace with your bucket
+            - name: S3_OBJECT_KEY
+              value: "data/sample.txt"    # Replace with your object key
+            - name: AWS_REGION
+              value: "us-east-1"         # Replace with your region
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "250m"
+              memory: "256Mi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 1000

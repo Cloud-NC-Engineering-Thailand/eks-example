@@ -1,0 +1,24 @@
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: profile
+  namespace: demo
+spec:
+  refreshInterval: "1h"           # How often to sync from Vault
+  secretStoreRef:
+    name: vault-approle-store      # References the SecretStore above
+    kind: SecretStore
+  target:
+    name: profile           # Name of the K8s Secret to create
+    creationPolicy: Owner         # ESO owns/manages this secret
+    template:
+      type: Opaque
+  data:
+    - secretKey: db_password
+      remoteRef:
+        key: "services/dev/profile"    # Path in Vault (under the mount)
+        property: "db_password"      # Field within that Vault secret
+    - secretKey: db_username
+      remoteRef:
+        key: "services/dev/profile"
+        property: "db_username"

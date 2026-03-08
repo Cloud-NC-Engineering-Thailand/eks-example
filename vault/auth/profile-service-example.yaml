@@ -1,0 +1,30 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: profile
+  namespace: demo
+spec:
+  containers:
+    - name: profile
+      image: busybox
+      command:
+        - sh
+        - -c
+        - |
+          echo "=== Reading secrets ==="
+          echo "db_username: $db_username"
+          echo "db_password: $db_password"
+          echo "=== Sleeping forever ==="
+          sleep infinity
+      env:
+        - name: db_username
+          valueFrom:
+            secretKeyRef:
+              name: profile       # <-- change to your Secret name
+              key: db_username     # <-- change to your Secret key
+        - name: db_password
+          valueFrom:
+            secretKeyRef:
+              name: profile       # <-- change to your Secret name
+              key: db_password       # <-- change to your Secret key
+  restartPolicy: Never

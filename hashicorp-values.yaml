@@ -1,0 +1,362 @@
+# =============================================================================
+# Vault Helm Chart - values.yaml
+# Configuration: 3-node HA cluster with Raft Integrated Storage + UI enabled (TLS DISABLED - testing only)
+# Chart: hashicorp/vault (https://github.com/hashicorp/vault-helm)
+# Helm: >= 3.6+ | Kubernetes: >= 1.29+
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Global settings
+# -----------------------------------------------------------------------------
+global:
+  enabled: true
+  # Namespace to deploy resources into (defaults to release namespace)
+  # namespace: "vault"
+
+  # TLS disabled for testing - set to false (re-enable for production)
+  tlsDisable: true
+
+  # Image pull secrets (if using a private registry)
+  # imagePullSecrets:
+  #   - name: my-registry-secret
+
+  # Pod Security Standards admission controller label
+  # openshift: false
+
+# -----------------------------------------------------------------------------
+# Vault injector (Agent Sidecar) - optional, keep enabled for k8s secret injection
+# -----------------------------------------------------------------------------
+injector:
+  enabled: false
+
+  replicas: 2
+
+  # Leader election for HA injector
+  leaderElector:
+    enabled: true
+
+  image:
+    repository: "hashicorp/vault-k8s"
+    tag: "latest"
+    pullPolicy: IfNotPresent
+
+  agentImage:
+    repository: "hashicorp/vault"
+    tag: "latest"
+
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "250m"
+    limits:
+      memory: "256Mi"
+      cpu: "250m"
+
+  # Affinity to avoid scheduling injector and vault server on same node (optional)
+  # Must be a string (multiline YAML), not a map - leave empty to disable
+  affinity: ""
+
+  tolerations: []
+
+  nodeSelector: {}
+
+# -----------------------------------------------------------------------------
+# Vault Server
+# -----------------------------------------------------------------------------
+server:
+  enabled: true
+
+  image:
+    repository: "hashicorp/vault"
+    tag: "latest"          # Pin to a specific version in production e.g. "1.18.0"
+    pullPolicy: IfNotPresent
+
+  # Update strategy for the StatefulSet
+  updateStrategyType: "OnDelete"
+
+  # Number of replicas - 3 nodes for HA quorum (Raft requires odd number: 3, 5, ...)
+  replicas: 3
+
+  # -----------------------------------------------------------------------------
+  # Resource requests and limits
+  # -----------------------------------------------------------------------------
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "250m"
+    limits:
+      memory: "512Mi"
+      cpu: "500m"
+
+  # -----------------------------------------------------------------------------
+  # Readiness / Liveness probes
+  # -----------------------------------------------------------------------------
+  readinessProbe:
+    enabled: true
+    path: "/v1/sys/health?standbyok=true&sealedcode=204&uninitcode=204"
+    failureThreshold: 2
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    successThreshold: 1
+    timeoutSeconds: 3
+
+  livenessProbe:
+    enabled: false          # Enable after initial cluster bootstrap
+    path: "/v1/sys/health?standbyok=true"
+    failureThreshold: 2
+    initialDelaySeconds: 60
+    periodSeconds: 5
+    successThreshold: 1
+    timeoutSeconds: 3
+
+  # -----------------------------------------------------------------------------
+  # Vault UI - enabled and exposed via ClusterIP (change to LoadBalancer/Ingress as needed)
+  # -----------------------------------------------------------------------------
+  ui:
+    enabled: true
+    publishNotReadyAddresses: true
+    # activeVaultPodOnly: false  # Set true to only route UI traffic to active node
+    serviceType: "ClusterIP"
+    serviceNodePort: null
+    externalPort: 8200
+    targetPort: 8200
+
+    # Uncomment to expose UI via LoadBalancer
+    # serviceType: "LoadBalancer"
+    # annotations:
+    #   service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+
+  # -----------------------------------------------------------------------------
+  # Extra environment variables
+  # NOTE: VAULT_API_ADDR and VAULT_CLUSTER_ADDR are automatically injected by
+  # the chart when ha.raft is enabled - do NOT redefine them here or you will
+  # get duplicate env var errors on the StatefulSet.
+  # -----------------------------------------------------------------------------
+  extraEnvironmentVars: {}
+
+  # -----------------------------------------------------------------------------
+  # Service account
+  # -----------------------------------------------------------------------------
+  serviceAccount:
+    create: true
+    name: ""
+    annotations: {}
+
+  # -----------------------------------------------------------------------------
+  # Vault configuration - Raft HA with integrated storage
+  # -----------------------------------------------------------------------------
+  ha:
+    enabled: true
+    replicas: 3
+
+    # Raft integrated storage - no external storage backend needed
+    raft:
+      enabled: true
+      setNodeId: true       # Uses pod name as Raft node ID for predictability
+
+      config: |
+        ui = true
+
+        listener "tcp" {
+          tls_disable     = 1
+          address         = "[::]:8200"
+          cluster_address = "[::]:8201"
+        }
+
+        storage "raft" {
+          path    = "/vault/data"
+          # node_id is automatically set to the Pod name via setNodeId: true above
+
+          retry_join {
+            leader_api_addr = "http://vault-0.vault-internal:8200"
+          }
+          retry_join {
+            leader_api_addr = "http://vault-1.vault-internal:8200"
+          }
+          retry_join {
+            leader_api_addr = "http://vault-2.vault-internal:8200"
+          }
+        }
+
+        # Telemetry (optional - uncomment to enable Prometheus metrics)
+        # telemetry {
+        #   prometheus_retention_time = "30s"
+        #   disable_hostname          = true
+        # }
+
+        service_registration "kubernetes" {}
+
+    # Optionally use config stanza if NOT using raft block above
+    # config: ""
+
+    # Disruption budget - ensure at least 2 nodes are always available
+    disruptionBudget:
+      enabled: true
+      maxUnavailable: 1     # With 3 replicas, ensures quorum is maintained
+
+  # -----------------------------------------------------------------------------
+  # Persistent Volume Claim for Raft data
+  # -----------------------------------------------------------------------------
+  dataStorage:
+    enabled: true
+    size: "10Gi"
+    mountPath: "/vault/data"
+    storageClass: null        # Set to your StorageClass name e.g. "gp3", "standard"
+    accessMode: ReadWriteOnce
+    annotations: {}
+
+  # Audit log storage (optional but recommended for production)
+  auditStorage:
+    enabled: false            # Set to true in production
+    size: "10Gi"
+    mountPath: "/vault/audit"
+    storageClass: null
+    accessMode: ReadWriteOnce
+    annotations: {}
+
+  # No TLS volumes needed for testing
+  volumes: []
+  volumeMounts: []
+
+  # -----------------------------------------------------------------------------
+  # Affinity rules - spread pods across nodes/zones for true HA
+  # -----------------------------------------------------------------------------
+  affinity: |
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        - labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: vault
+              app.kubernetes.io/instance: "{{ .Release.Name }}"
+              component: server
+          topologyKey: kubernetes.io/hostname
+
+  # Optional: zone-level spread (uncomment for multi-AZ clusters)
+  # topologySpreadConstraints: |
+  #   - maxSkew: 1
+  #     topologyKey: topology.kubernetes.io/zone
+  #     whenUnsatisfiable: DoNotSchedule
+  #     labelSelector:
+  #       matchLabels:
+  #         app.kubernetes.io/name: vault
+  #         component: server
+
+  tolerations: []
+
+  nodeSelector: {}
+
+  # -----------------------------------------------------------------------------
+  # Network policy (optional - restricts ingress to vault pods)
+  # -----------------------------------------------------------------------------
+  # networkPolicy:
+  #   enabled: false
+  #   egress: []
+  #   ingress: []
+
+  # -----------------------------------------------------------------------------
+  # Annotations & labels
+  # -----------------------------------------------------------------------------
+  annotations: {}
+
+  podAnnotations: {}
+
+  labels: {}
+
+  # Extra init containers (e.g. for cert-manager auto-injection or init tasks)
+  extraInitContainers: []
+
+  # Extra sidecar containers
+  extraContainers: []
+
+  # -----------------------------------------------------------------------------
+  # Ingress (optional - for external access to Vault UI / API)
+  # Requires an ingress controller (e.g. nginx, traefik) with TLS passthrough
+  # -----------------------------------------------------------------------------
+  # ingress:
+  #   enabled: true
+  #   annotations:
+  #     kubernetes.io/ingress.class: "nginx"
+  #     nginx.ingress.kubernetes.io/ssl-passthrough: "true"
+  #     nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+  #   hosts:
+  #     - host: vault.example.com
+  #       paths:
+  #         - /
+  #   tls:
+  #     - hosts:
+  #         - vault.example.com
+  #       secretName: vault-tls
+
+  # -----------------------------------------------------------------------------
+  # Service configuration (internal cluster service)
+  # -----------------------------------------------------------------------------
+  service:
+    enabled: true
+    active:
+      enabled: true
+      annotations: {}
+    standby:
+      enabled: true
+      annotations: {}
+    instanceLevelConfig: false
+    publishNotReadyAddresses: true
+    externalTrafficPolicy: Cluster
+    port: 8200
+    targetPort: 8200
+    annotations: {}
+
+# -----------------------------------------------------------------------------
+# CSI Provider (optional - for Secrets Store CSI Driver integration)
+# -----------------------------------------------------------------------------
+csi:
+  enabled: false
+  image:
+    repository: "hashicorp/vault-csi-provider"
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  resources: {}
+  daemonSet:
+    annotations: {}
+  agent:
+    enabled: true
+    image:
+      repository: "hashicorp/vault"
+      tag: "latest"
+      pullPolicy: IfNotPresent
+    resources: {}
+  debug: false
+  extraArgs: []
+
+# =============================================================================
+# POST-INSTALL STEPS (run after helm install):
+#
+# 1. Wait for pods to be Running:
+#      kubectl get pods -l app.kubernetes.io/name=vault
+#
+# 2. Initialize Vault on the first pod:
+#      kubectl exec vault-0 -- vault operator init \
+#        -key-shares=5 \
+#        -key-threshold=3 \
+#        -format=json > vault-init-keys.json
+#      *** STORE vault-init-keys.json SECURELY ***
+#
+# 3. Unseal vault-0 (repeat with 3 of the 5 keys):
+#      kubectl exec vault-0 -- vault operator unseal <unseal-key-1>
+#      kubectl exec vault-0 -- vault operator unseal <unseal-key-2>
+#      kubectl exec vault-0 -- vault operator unseal <unseal-key-3>
+#
+# 4. Join vault-1 and vault-2 to the Raft cluster:
+#      kubectl exec vault-1 -- vault operator raft join http://vault-0.vault-internal:8200
+#      kubectl exec vault-2 -- vault operator raft join http://vault-0.vault-internal:8200
+#
+# 5. Unseal vault-1 and vault-2 the same way as step 3.
+#
+# 6. Verify Raft peers:
+#      kubectl exec vault-0 -- vault operator raft list-peers
+#
+# 7. Access UI (port-forward if using ClusterIP):
+#      kubectl port-forward svc/vault-ui 8200:8200
+#      Open: http://localhost:8200   ← NOTE: http (no TLS)
+#
+# ⚠️  TLS IS DISABLED - FOR TESTING ONLY. Do not use in production.
+# =============================================================================
